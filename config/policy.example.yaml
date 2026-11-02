@@ -1,0 +1,37 @@
+# One policy per product deployment, mounted at /etc/llm-gateway/policy.yaml (GATEWAY_POLICY).
+product: emr
+data_class: phi              # general | payments | phi: set by the platform registry, not the team
+
+providers:
+  anthropic:
+    type: anthropic
+    base_url: https://api.anthropic.com
+    api_key_env: ANTHROPIC_API_KEY
+    baa: true                # a BAA covers this account; required for phi
+    models: ["claude-*"]
+  # openai:
+  #   type: openai
+  #   base_url: https://api.openai.com
+  #   api_key_env: OPENAI_API_KEY
+  #   baa: false
+  #   models: ["gpt-*"]
+
+data_classes:
+  phi:      { require_baa: true, redaction: "off" }   # PHI goes only to BAA-covered providers
+  payments: { require_baa: false, redaction: redact, detectors: [card_number, secret, us_ssn] }
+  general:  { require_baa: false, redaction: redact, detectors: [secret, card_number, us_ssn] }
+
+# Each agent gets its own key (stored as a secret in its own deployment); only the hash lives here.
+# Generate: python -c "import secrets,hashlib;k=secrets.token_urlsafe(32);print(k);print(hashlib.sha256(k.encode()).hexdigest())"
+callers:
+  intake-agent:
+    key_sha256: "0000000000000000000000000000000000000000000000000000000000000000"
+    budget_usd_per_day: 50
+    models: ["claude-sonnet-*", "claude-haiku-*"]
+    max_tokens: 8192
+
+# US dollars per million tokens. Cache writes default to 1.25 x input, cache reads to 0.1 x input.
+pricing:
+  "claude-opus-*":   { input: 15.0, output: 75.0 }
+  "claude-sonnet-*": { input: 3.0,  output: 15.0 }
+  "claude-haiku-*":  { input: 1.0,  output: 5.0 }
