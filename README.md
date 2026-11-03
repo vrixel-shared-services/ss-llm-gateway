@@ -29,7 +29,7 @@ extended thinking and streaming behave exactly as with the API. OpenAI-compatibl
 ```bash
 uv sync
 GATEWAY_POLICY=config/policy.example.yaml ANTHROPIC_API_KEY=... uv run llm-gateway
-uv run pytest                 # tests, coverage at least 80%
+uv run pytest                 # tests, coverage at least 90%
 uv run ruff check . && uv run mypy
 ```
 
