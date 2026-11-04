@@ -1,7 +1,10 @@
 import json
 
+import httpx
 import pytest
+from fastapi.testclient import TestClient
 
+from llm_gateway.app import create_app
 from llm_gateway.ledger import cost_usd
 from llm_gateway.policy import Policy
 from llm_gateway.providers.openai import from_openai, to_openai
@@ -227,3 +230,66 @@ def test_scrub_request_leaves_structure_alone():
     }
     out, findings = scrub_request(body, ["card_number"])
     assert out == body and findings.total == 0
+
+
+def test_every_request_is_audited_before_it_reaches_a_model(upstream, monkeypatch):
+    from llm_gateway.audit import Auditor, MemorySink
+
+    monkeypatch.setenv("T_ANTHROPIC", "sk-real")
+    sink = MemorySink()
+    pol = policy("payments")
+    app = create_app(
+        pol,
+        transport=httpx.MockTransport(upstream),
+        auditor=Auditor(sink, service="llm-gateway", product="emr"),
+    )
+    with TestClient(app) as client:
+        assert call(client, **{"x-vrixel-run": "run-1"}).status_code == 200
+        card = {
+            "model": "claude-sonnet-5-5",
+            "max_tokens": 10,
+            "messages": [{"role": "user", "content": "4111 1111 1111 1111"}],
+        }
+        assert call(client, card).status_code == 400
+        assert call(client, key="nope").status_code == 401
+        data = [e["data"] for e in sink.events]
+        assert [(d["action"], d["actor"]["id"], d["outcome"]) for d in data] == [
+            ("llm.request", "intake-agent", "success"),
+            ("llm.request", "intake-agent", "denied"),
+            ("llm.request", "unknown", "denied"),
+        ]
+        assert data[0]["resource"] == {"type": "model", "ids": ["claude-sonnet-5-5"]}
+        assert data[0]["details"]["provider"] == "anthropic" and data[0]["details"]["labels"] == {
+            "run": "run-1"
+        }
+        assert data[1]["details"]["blocked"] == {"card_number": 1}
+        assert "4111" not in str(sink.events) and "Hello" not in str(sink.events)
+
+        sink.fail = True
+        sent = len(upstream.requests)
+        r = call(client)
+        assert r.status_code == 503 and "audit trail" in r.json()["error"]["message"]
+        assert len(upstream.requests) == sent  # nothing reached the model unrecorded
+
+
+def test_audit_settings_come_from_the_environment():
+    from llm_gateway.app import make_auditor
+    from llm_gateway.audit import KafkaSink, LogSink
+
+    a = make_auditor(policy(), {"GATEWAY_ENVIRONMENT": "staging", "GATEWAY_AUDIT_REQUIRED": "false"})
+    assert (
+        isinstance(a.sink, LogSink)
+        and not a.required
+        and a.environment == "staging"
+        and a.data_class == "phi"
+    )
+    k = make_auditor(
+        policy(),
+        {
+            "GATEWAY_AUDIT_SINK": "kafka",
+            "GATEWAY_AUDIT_KAFKA_BOOTSTRAP": "127.0.0.1:9",
+            "GATEWAY_AUDIT_TOPIC": "emr.audit.v1",
+            "GATEWAY_AUDIT_KAFKA_CONFIG": '{"client.id": "gw"}',
+        },
+    )
+    assert isinstance(k.sink, KafkaSink) and k.sink.topic == "emr.audit.v1" and k.required
