@@ -22,7 +22,7 @@ dependencies = [
 llm-gateway = "llm_gateway.app:main"
 
 [dependency-groups]
-dev = ["pytest>=9.2", "pytest-cov>=7.1", "ruff>=0.17", "mypy>=2.4", "types-pyyaml"]
+dev = ["pytest>=9.2", "pytest-cov>=7.1", "ruff>=0.17.4", "mypy>=2.4", "types-pyyaml"]
 
 [build-system]
 requires = ["hatchling>=1.33.0"]
