@@ -51,3 +51,29 @@ def test_logging_goes_to_stdout_as_json(capsys: object) -> None:
         assert json.loads(out)["message"] == "ready"
     finally:
         root.handlers[:] = before
+
+
+def test_each_model_call_is_a_genai_span_without_content(make_client) -> None:
+    from opentelemetry.sdk.trace import TracerProvider
+
+    from llm_gateway.app import annotate
+
+    exporter = InMemorySpanExporter()
+    telemetry.setup("llm-gateway", exporter=exporter)
+    tracer = trace.get_tracer("test")
+    with tracer.start_as_current_span("POST /v1/messages") as span:
+        annotate(
+            span,
+            caller="intake-agent",
+            model="claude-sonnet-5-5",
+            provider="anthropic",
+            usage={"input_tokens": 100, "output_tokens": 20, "cache_read_input_tokens": 80},
+            cost=0.0012,
+            labels={"agent": "intake-agent", "variant": "concise", "secret": "nope"},
+        )
+    got = [s for s in exporter.get_finished_spans() if s.name == "POST /v1/messages"][-1].attributes
+    assert got["gen_ai.operation.name"] == "chat" and got["gen_ai.request.model"] == "claude-sonnet-5-5"
+    assert got["gen_ai.usage.input_tokens"] == 100 and got["gen_ai.usage.cache_read_input_tokens"] == 80
+    assert got["vrixel.variant"] == "concise" and got["vrixel.cost_usd"] == 0.0012
+    assert "vrixel.secret" not in got and not any("prompt" in k or "completion" in k for k in got)
+    assert TracerProvider  # the SDK the gateway's telemetry installs

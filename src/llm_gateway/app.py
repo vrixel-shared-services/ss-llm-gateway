@@ -29,6 +29,7 @@ from typing import Any
 import httpx
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse, PlainTextResponse, Response, StreamingResponse
+from opentelemetry import trace
 from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
 
 from . import telemetry
@@ -61,6 +62,39 @@ def make_auditor(pol: Policy, env: Any = os.environ) -> Auditor:
         data_class=pol.data_class,
         required=env.get("GATEWAY_AUDIT_REQUIRED", "true").lower() != "false",
     )
+
+
+def annotate(
+    span: Any,
+    *,
+    caller: str,
+    model: str,
+    provider: str,
+    usage: dict[str, Any],
+    cost: float,
+    labels: dict[str, str],
+) -> None:
+    """The model call on the request's span, in OpenTelemetry's GenAI terms: which model and
+    provider, the tokens and the cost, and the caller's labels (agent, variant, run). Never the
+    prompt or the reply: the gateway's traces are structure only, whatever the data class."""
+    if span is None or not span.is_recording():
+        return
+    span.set_attribute("gen_ai.operation.name", "chat")
+    span.set_attribute("gen_ai.provider.name", provider)
+    span.set_attribute("gen_ai.request.model", model)
+    for key, attr in (
+        ("input_tokens", "gen_ai.usage.input_tokens"),
+        ("output_tokens", "gen_ai.usage.output_tokens"),
+        ("cache_read_input_tokens", "gen_ai.usage.cache_read_input_tokens"),
+        ("cache_creation_input_tokens", "gen_ai.usage.cache_creation_input_tokens"),
+    ):
+        if usage.get(key) is not None:
+            span.set_attribute(attr, int(usage.get(key) or 0))
+    span.set_attribute("vrixel.cost_usd", round(float(cost), 6))
+    span.set_attribute("vrixel.caller", caller)
+    for k, v in labels.items():
+        if k in ("agent", "variant", "run", "thread", "feature", "tenant"):
+            span.set_attribute(f"vrixel.{k}", str(v)[:200])
 
 
 def create_app(
@@ -204,17 +238,28 @@ def create_app(
         if body.get("stream"):
             usage: dict[str, Any] = {}
 
+            span = trace.get_current_span()
+
             async def relay() -> AsyncIterator[bytes]:
                 try:
                     async for chunk in ad.stream(body, headers, usage):
                         yield chunk
                 finally:
-                    ledger.record(
+                    cost = ledger.record(
                         caller=caller_name,
                         model=model,
                         provider=provider_name,
                         usage=usage,
                         request_id=request_id,
+                        labels=labels,
+                    )
+                    annotate(
+                        span,
+                        caller=caller_name,
+                        model=model,
+                        provider=provider_name,
+                        usage=usage,
+                        cost=cost,
                         labels=labels,
                     )
                     REQUESTS.labels(pol.product, caller_name, "ok").inc()
@@ -231,12 +276,21 @@ def create_app(
             REQUESTS.labels(pol.product, caller_name, "upstream_error").inc()
             return error(502, "api_error", f"provider unreachable: {type(exc).__name__}")
         if res.status < 400:
-            ledger.record(
+            cost = ledger.record(
                 caller=caller_name,
                 model=model,
                 provider=provider_name,
                 usage=res.usage,
                 request_id=request_id,
+                labels=labels,
+            )
+            annotate(
+                trace.get_current_span(),
+                caller=caller_name,
+                model=model,
+                provider=provider_name,
+                usage=res.usage,
+                cost=cost,
                 labels=labels,
             )
         REQUESTS.labels(

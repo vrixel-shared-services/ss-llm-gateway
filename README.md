@@ -20,7 +20,7 @@ client = anthropic.Anthropic(base_url=os.environ["LLM_GATEWAY_URL"], api_key=os.
 | Spend | A daily budget per agent; the request is refused with `rate_limit_error` once it is used |
 | Accountability | One JSON log line per call (product, agent, model, tokens, cache reads and writes, cost, request id, any `x-vrixel-*` labels such as feature id) and Prometheus metrics |
 | Audit | Every request is audited before it reaches a provider (CloudEvents `vrixel.audit.v1` on the product's Kafka audit topic): caller, model, provider, kinds of data redacted, and every refusal with its reason. Never content. If the record can't be published the request is refused (`GATEWAY_AUDIT_REQUIRED`, default true) |
-| Tracing | OpenTelemetry (`OTEL_EXPORTER_OTLP_ENDPOINT`): each request joins the agent's trace, with the provider call as a child span; logs are JSON with `trace.id` |
+| Tracing | OpenTelemetry (`OTEL_EXPORTER_OTLP_ENDPOINT`): each request joins the agent's trace, with the provider call as a child span; logs are JSON with `trace.id`. The request's span carries the call in OpenTelemetry's GenAI terms (`gen_ai.request.model`, `gen_ai.provider.name`, `gen_ai.usage.*`) with `vrixel.cost_usd`, the caller and its `agent`, `variant`, `run` labels, never the prompt or the reply |
 
 It passes Anthropic requests through unchanged, so prompt caching (`cache_control`), tools,
 extended thinking and streaming behave exactly as with the API. OpenAI-compatible providers
